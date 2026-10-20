@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+# Credentials live in /root/lab/lab-secrets, never here.
+*.key
+*-password
+id_ed25519

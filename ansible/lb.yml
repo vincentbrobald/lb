@@ -1,0 +1,20 @@
+---
+# HAProxy SNI load balancer on lb (routes from routes.yaml) and its Data
+# Plane API. Needs pki.yml first (the API certificate).
+# The VM is created first when it does not exist (role libvirt_vm).
+#   ansible-playbook lb.yml [--check --diff]
+- name: VM
+  hosts: lb
+  gather_facts: false
+  tags: [vm]
+  roles:
+    - libvirt_vm
+
+- name: Load balancer
+  hosts: lb
+  become: true
+  gather_facts: false          # site_guard gathers them
+  roles:
+    - site_guard
+    - site_ca
+    - haproxy_lb

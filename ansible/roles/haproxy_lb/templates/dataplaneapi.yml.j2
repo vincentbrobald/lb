@@ -1,0 +1,28 @@
+config_version: 2
+name: {{ inventory_hostname_short }}
+mode: single
+dataplaneapi:
+  scheme: [https]
+  tls:
+    tls_host: 0.0.0.0
+    tls_port: {{ haproxy_lb_dataplaneapi_port }}
+    tls_certificate: /etc/dataplaneapi/tls/tls.crt
+    tls_key: /etc/dataplaneapi/tls/tls.key
+  userlist:
+    userlist: controller
+  transaction:
+    transaction_dir: /var/lib/dataplaneapi/transactions
+    backups_number: 20
+    backups_dir: /var/lib/dataplaneapi/backups
+  resources:
+    maps_dir: /etc/haproxy/maps
+    ssl_certs_dir: /etc/haproxy/ssl
+    dataplane_storage_dir: /var/lib/dataplaneapi/storage
+haproxy:
+  config_file: /etc/haproxy/haproxy.cfg
+  haproxy_bin: /usr/sbin/haproxy
+  reload:
+    reload_delay: 2
+    reload_strategy: custom
+    reload_cmd: /usr/local/sbin/haproxy-ctl reload
+    restart_cmd: /usr/local/sbin/haproxy-ctl restart

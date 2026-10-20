@@ -1,0 +1,31 @@
+---
+# The password stays on the controller; HAProxy gets a SHA-512 crypt hash.
+# An existing hash that matches the password is kept (no change).
+- name: Data Plane API password
+  ansible.builtin.set_fact:
+    haproxy_lb_password: "{{ lookup('site_secret', haproxy_lb_dataplaneapi_password_file, generate='alnum:32') }}"
+  no_log: true
+
+- name: Current hash
+  ansible.builtin.shell: >-
+    set -o pipefail;
+    awk '/^userlist controller/ { f = 1 } f && $1 == "user" && $2 == "admin" { print $4; exit }' /etc/haproxy/haproxy.cfg
+  register: haproxy_lb_current
+  changed_when: false
+  failed_when: false
+  check_mode: false          # read-only; needed for --check
+
+- name: Hash the password (the current hash's salt first)
+  ansible.builtin.command:
+    argv: "{{ ['openssl', 'passwd', '-6', '-stdin'] + (['-salt', salt] if salt else []) }}"
+    stdin: "{{ haproxy_lb_password }}"
+  vars:
+    salt: "{{ (haproxy_lb_current.stdout.split('$') + ['', '', ''])[2] if haproxy_lb_current.stdout.startswith('$6$') else '' }}"
+  register: haproxy_lb_hashed
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Remember the hash
+  ansible.builtin.set_fact:
+    haproxy_lb_hash: "{{ haproxy_lb_hashed.stdout }}"

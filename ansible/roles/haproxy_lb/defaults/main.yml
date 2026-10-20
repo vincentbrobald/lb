@@ -1,0 +1,14 @@
+---
+# SNI-routing HAProxy load balancer. The routes live in routes.yaml and are
+# rendered by lbctl.py (also usable alone: lbctl.py apply).
+haproxy_lb_lbctl: "{{ playbook_dir }}/../lbctl.py"
+haproxy_lb_routes: "{{ playbook_dir }}/../routes.yaml"
+
+# HAProxy Data Plane API on :5555 (HTTPS, certificate from step-ca, renewed
+# on the host). Basic auth: user admin, password file under site_secrets_dir
+# (generated when missing); HAProxy keeps only a SHA-512 crypt hash.
+haproxy_lb_dataplaneapi: true
+haproxy_lb_dataplaneapi_version: 3.4.4
+haproxy_lb_dataplaneapi_port: 5555
+haproxy_lb_dataplaneapi_password_file: lb/dataplaneapi-password
+haproxy_lb_hostname: "{{ inventory_hostname }}"

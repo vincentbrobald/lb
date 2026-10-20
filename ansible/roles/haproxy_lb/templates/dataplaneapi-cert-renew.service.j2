@@ -1,0 +1,13 @@
+[Unit]
+Description=Renew the Data Plane API certificate from step-ca
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/bin/step ca renew --daemon --ca-url https://{{ site_pki_host }} --root {{ site_ca_anchor }} \
+    --exec "systemctl try-restart dataplaneapi" /etc/dataplaneapi/tls/tls.crt /etc/dataplaneapi/tls/tls.key
+Restart=always
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target

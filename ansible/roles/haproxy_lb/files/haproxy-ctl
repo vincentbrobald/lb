@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Reload or restart HAProxy for the Data Plane API (its reload_cmd and
+# restart_cmd). The API writes haproxy.cfg through a temporary file, which
+# leaves it labelled tmp_t: HAProxy (confined, haproxy_t) could not read it.
+# Restore the label and permissions first.
+set -euo pipefail
+case ${1:-} in reload|restart) ;; *) echo "usage: $0 reload|restart" >&2; exit 2 ;; esac
+restorecon -F /etc/haproxy/haproxy.cfg
+chown root:haproxy /etc/haproxy/haproxy.cfg
+chmod 640 /etc/haproxy/haproxy.cfg
+exec systemctl "$1" haproxy

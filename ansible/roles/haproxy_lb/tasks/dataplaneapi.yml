@@ -1,0 +1,190 @@
+---
+- name: Smallstep package repository (step-cli renews the certificate)
+  ansible.builtin.copy:
+    src: smallstep.repo
+    dest: /etc/yum.repos.d/smallstep.repo
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Installed Data Plane API version
+  ansible.builtin.command: rpm -q --qf '%{VERSION}' dataplaneapi
+  register: haproxy_lb_dpa_installed
+  changed_when: false
+  failed_when: false
+  check_mode: false          # read-only; needed for --check
+
+- name: Install the Data Plane API {{ haproxy_lb_dataplaneapi_version }}
+  when: haproxy_lb_dpa_installed.stdout != haproxy_lb_dataplaneapi_version
+  vars:
+    rpm: "dataplaneapi_{{ haproxy_lb_dataplaneapi_version }}_linux_amd64.rpm"
+    base: "https://github.com/haproxytech/dataplaneapi/releases/download/v{{ haproxy_lb_dataplaneapi_version }}"
+  block:
+    - name: Download the RPM (checked against the release's checksums.txt)
+      ansible.builtin.get_url:
+        url: "{{ base }}/{{ rpm }}"
+        dest: "/tmp/{{ rpm }}"
+        checksum: "sha256:{{ base }}/checksums.txt"
+        mode: "0600"
+
+    - name: Install the RPM
+      ansible.builtin.dnf:
+        name: "/tmp/{{ rpm }}"
+        state: present
+        disable_gpg_check: true    # unsigned; verified by checksum above
+      notify: Restart dataplaneapi
+
+    - name: Remove the RPM
+      ansible.builtin.file:
+        path: "/tmp/{{ rpm }}"
+        state: absent
+
+- name: Install step-cli
+  ansible.builtin.dnf:
+    name: step-cli
+    state: present
+
+- name: Directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0700"
+  loop: [/etc/dataplaneapi/tls, /etc/systemd/system/dataplaneapi.service.d, /var/lib/dataplaneapi/transactions, /var/lib/dataplaneapi/backups,
+         /var/lib/dataplaneapi/storage, /etc/haproxy/maps, /etc/haproxy/ssl]
+
+# A certificate the host renews itself (step ca renew); a new one only when
+# it is missing or about to expire (the host was down), issued on the CA
+# host with the JWK provisioner.
+- name: Check the API certificate
+  ansible.builtin.command: openssl x509 -in /etc/dataplaneapi/tls/tls.crt -noout -checkend 3600
+  register: haproxy_lb_cert
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: New API certificate
+  when: haproxy_lb_cert.rc != 0
+  vars:
+    pki: "{{ site_pki_host }}"
+    stepca: "{{ hostvars[site_pki_host].step_ca_path | default('/etc/step-ca') }}"
+  block:
+    - name: Issue the certificate on {{ site_pki_host }}
+      ansible.builtin.command:
+        argv: [step, ca, certificate, "{{ haproxy_lb_hostname }}", "/root/{{ haproxy_lb_hostname }}.crt",
+               "/root/{{ haproxy_lb_hostname }}.key", --provisioner,
+               "{{ hostvars[site_pki_host].step_ca_admin | default('admin@' ~ site_domain) }}",
+               --provisioner-password-file, "{{ stepca }}/provisioner-password.txt",
+               --ca-url, "https://{{ site_pki_host }}", --root, "{{ stepca }}/certs/root_ca.crt", --force]
+      delegate_to: "{{ pki }}"
+      changed_when: true
+
+    - name: Read the certificate and key
+      ansible.builtin.slurp:
+        src: "/root/{{ haproxy_lb_hostname }}.{{ item }}"
+      loop: [crt, key]
+      delegate_to: "{{ pki }}"
+      register: haproxy_lb_issued
+      no_log: true
+
+    - name: Remove them from {{ site_pki_host }}
+      ansible.builtin.file:
+        path: "/root/{{ haproxy_lb_hostname }}.{{ item }}"
+        state: absent
+      loop: [crt, key]
+      delegate_to: "{{ pki }}"
+
+    - name: Install the certificate and key
+      ansible.builtin.copy:
+        content: "{{ item.content | b64decode }}"
+        dest: "/etc/dataplaneapi/tls/tls.{{ item.item }}"
+        owner: root
+        group: root
+        mode: "0600"
+      loop: "{{ haproxy_lb_issued.results }}"
+      loop_control:
+        label: "tls.{{ item.item }}"
+      notify: Restart dataplaneapi
+      no_log: true
+
+# The API rewrites its configuration file in its own layout when it starts:
+# the role's version is kept as dataplaneapi.yml.src and copied over only
+# when it changes.
+- name: Data Plane API configuration
+  ansible.builtin.template:
+    src: dataplaneapi.yml.j2
+    dest: /etc/dataplaneapi/dataplaneapi.yml.src
+    owner: root
+    group: root
+    mode: "0600"
+  register: haproxy_lb_dpa_src
+
+- name: Check for the API's configuration file
+  ansible.builtin.stat:
+    path: /etc/dataplaneapi/dataplaneapi.yml
+  register: haproxy_lb_dpa_cfg
+
+- name: Install the Data Plane API configuration
+  ansible.builtin.copy:
+    src: /etc/dataplaneapi/dataplaneapi.yml.src
+    dest: /etc/dataplaneapi/dataplaneapi.yml
+    remote_src: true
+    owner: root
+    group: root
+    mode: "0600"
+  when: haproxy_lb_dpa_src is changed or not haproxy_lb_dpa_cfg.stat.exists
+  notify: Restart dataplaneapi
+
+# The API writes haproxy.cfg through a temporary file it renames: in /tmp the
+# file would keep the tmp_t label, which HAProxy (haproxy_t) may not read.
+# A temporary directory under /etc/haproxy gives it HAProxy's label.
+- name: Temporary directory of the API
+  ansible.builtin.file:
+    path: /etc/haproxy/.dataplaneapi-tmp
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: The API's temporary files under /etc/haproxy
+  ansible.builtin.copy:
+    content: |
+      [Service]
+      Environment=TMPDIR=/etc/haproxy/.dataplaneapi-tmp
+    dest: /etc/systemd/system/dataplaneapi.service.d/tmpdir.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart dataplaneapi
+
+- name: Certificate renewal service
+  ansible.builtin.template:
+    src: dataplaneapi-cert-renew.service.j2
+    dest: /etc/systemd/system/dataplaneapi-cert-renew.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart dataplaneapi-cert-renew
+
+- name: Apply pending restarts
+  ansible.builtin.meta: flush_handlers
+
+- name: Start the services
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    state: started
+    enabled: true
+    daemon_reload: true
+  loop: [dataplaneapi-cert-renew, dataplaneapi]
+
+- name: Wait until the API answers on https://{{ haproxy_lb_hostname }}:{{ haproxy_lb_dataplaneapi_port }}
+  ansible.builtin.uri:
+    url: "https://{{ haproxy_lb_hostname }}:{{ haproxy_lb_dataplaneapi_port }}/v3/info"
+    url_username: admin
+    url_password: "{{ haproxy_lb_password }}"
+    force_basic_auth: true
+  register: haproxy_lb_api
+  until: haproxy_lb_api.status == 200
+  retries: 30
+  delay: 2
+  check_mode: false
+  no_log: true

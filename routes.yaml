@@ -1,0 +1,20 @@
+# SNI routes for lb.example.org. Apply with: /root/lab/lb/lbctl.py apply
+#
+# Each route maps host names to backends. On TLS ports (443, 6443, ...) the
+# connection is routed by its TLS SNI name and passed through untouched; with
+# "http" backends, plain HTTP on :80 is routed by the Host header as well.
+# Hosts are exact names or "*.domain" (any depth below domain).
+#
+# Example for a cluster "lab" (LAN mode, Gateway on 192.0.2.204):
+#
+#  - name: lab-api
+#    hosts: [api.lab.example.org]
+#    port: 6443
+#    backends: ["192.0.2.201:6443", "192.0.2.202:6443", "192.0.2.203:6443"]
+#    healthCheck: readyz          # GET /readyz on each API server (default: tcp)
+#  - name: lab-apps
+#    hosts: ["*.apps.lab.example.org"]
+#    port: 443
+#    backends: ["192.0.2.204:443"]
+#    http: ["192.0.2.204:80"]   # also route plain HTTP on :80
+routes: []
