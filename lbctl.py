@@ -32,14 +32,10 @@ from pathlib import Path
 import yaml
 
 HERE = Path(__file__).resolve().parent
-# Credentials live outside the code tree (never in git).
 SECRETS = Path(os.environ.get("INFRA_SECRETS", "/root/lab/lab-secrets")) / "lb"
 
 
 def _lb_host() -> str:
-    """The LB's host name: $LB_HOST, else the lb host of the playbook's
-    inventory (ansible/inventory/hosts.yml), so the site's name lives in one
-    place."""
     if os.environ.get("LB_HOST"):
         return os.environ["LB_HOST"]
     try:
@@ -53,7 +49,7 @@ LB_HOST = _lb_host()
 SSH = ["ssh", "-i", str(SECRETS / "id_ed25519"), "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
        "-o", "LogLevel=ERROR", "-o", "BatchMode=yes", f"almalinux@{LB_HOST}"]
 HTTP_PORT = 80
-DEFAULT_TLS_PORTS = (443, 6443)          # always listening, even without routes
+DEFAULT_TLS_PORTS = (443, 6443)
 HOST_RE = re.compile(r"(\*\.)?([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}")
 
 
@@ -120,7 +116,7 @@ def _endpoint(value, where: str) -> tuple[str, int]:
 
 def _sni_acl(host: str) -> str:
     if host.startswith("*."):
-        return f"req.ssl_sni -i -m end {host[1:]}"     # *.apps.x -> any name ending in .apps.x
+        return f"req.ssl_sni -i -m end {host[1:]}"
     return f"req.ssl_sni -i {host}"
 
 
@@ -216,7 +212,6 @@ def ports(routes: list[dict]) -> list[int]:
 
 def apply(routes: list[dict]) -> None:
     cfg = render(routes)
-    # Validate first; only a valid configuration replaces the current one.
     script = textwrap.dedent(f"""\
         set -euo pipefail
         tmp=$(mktemp); cat > "$tmp"
