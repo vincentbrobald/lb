@@ -21,6 +21,7 @@ apply keeps the LB's "userlist controller" (the Data Plane API's users).
 from __future__ import annotations
 
 import argparse
+import functools
 import ipaddress
 import os
 import re
@@ -36,11 +37,12 @@ HERE = Path(__file__).resolve().parent
 SECRETS = Path(os.environ.get("INFRA_SECRETS", "/root/lab/lab-secrets")) / "lb"
 
 
-def _lb_host() -> str:
+@functools.cache
+def lb_host() -> str:
     """Return the LB host: $LB_HOST, else the first host of group lb in ansible/inventory/hosts.yml.
 
-    Exits with a message when neither gives one. Called at import, so every
-    command (render too) needs it.
+    Exits with a message when neither gives one. Resolved on first use, so the
+    commands that don't reach the LB (render, ports, --help) don't need it.
     """
     if os.environ.get("LB_HOST"):
         return os.environ["LB_HOST"]
@@ -51,10 +53,13 @@ def _lb_host() -> str:
         sys.exit("lbctl.py: set LB_HOST, or list the LB under 'lb' in ansible/inventory/hosts.yml")
 
 
-LB_HOST = _lb_host()
-# ssh as almalinux to the LB, non-interactively; the LB's host key is not checked.
-SSH = ["ssh", "-i", str(SECRETS / "id_ed25519"), "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
-       "-o", "LogLevel=ERROR", "-o", "BatchMode=yes", f"almalinux@{LB_HOST}"]
+
+
+def ssh_cmd() -> list[str]:
+    """Return the ssh command line to the LB as almalinux, non-interactive; the LB's host key is not checked."""
+    return ["ssh", "-i", str(SECRETS / "id_ed25519"), "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
+            "-o", "LogLevel=ERROR", "-o", "BatchMode=yes", f"almalinux@{lb_host()}"]
+
 HTTP_PORT = 80
 DEFAULT_TLS_PORTS = (443, 6443)
 # A lower-case host name with at least two labels, the last alphabetic, optionally
@@ -123,15 +128,15 @@ def load_routes(path: Path) -> list[dict]:
 def _endpoint(value, where: str) -> tuple[str, int]:
     """Parse "ip:port" (IPv4) into (ip, port); raise LbError naming where otherwise.
 
-    The port range is checked with assert, so python -O would skip that check.
     """
     m = re.fullmatch(r"([0-9.]+):(\d+)", str(value))
     try:
         ipaddress.IPv4Address(m.group(1))
         port = int(m.group(2))
-        assert 1 <= port <= 65535
-    except (AttributeError, ValueError, AssertionError):
+    except (AttributeError, ValueError):
         raise LbError(f"{where}: '{value}' must be ip:port") from None
+    if not 1 <= port <= 65535:
+        raise LbError(f"{where}: '{value}' must be ip:port")
     return m.group(1), port
 
 
@@ -238,7 +243,7 @@ def ssh(cmd: str, input: str | None = None, check: bool = True) -> subprocess.Co
 
     With check, a non-zero exit raises LbError carrying the output.
     """
-    p = subprocess.run(SSH + [cmd], input=input, text=True, capture_output=True)
+    p = subprocess.run(ssh_cmd() + [cmd], input=input, text=True, capture_output=True)
     if check and p.returncode != 0:
         raise LbError((p.stdout + p.stderr).strip() or f"remote command failed: {cmd}")
     return p
@@ -286,7 +291,7 @@ def apply(routes: list[dict]) -> None:
         raise LbError("HAProxy rejected the configuration (nothing changed):\n" + p.stdout.strip())
     if p.returncode != 0:
         raise LbError((p.stdout + p.stderr).strip())
-    print(f"Applied {len(routes)} route(s) to {LB_HOST}; haproxy {p.stdout.strip().splitlines()[-1]}")
+    print(f"Applied {len(routes)} route(s) to {lb_host()}; haproxy {p.stdout.strip().splitlines()[-1]}")
 
 
 def status() -> None:
